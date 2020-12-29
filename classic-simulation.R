@@ -4,31 +4,28 @@ setwd("C:/Users/Thomas/Dropbox/Research/Active/RIDE/Software") #Set working dire
 source('ride-functions.R') #Load JADE functions
 source('comparator-functions.R') #Load comparator functions
 
-#Safety rule differences
-#target = 0.2; a=2*target; b=2*(1-target)
-#sapply(1:12,function(ntot) rbind(1-pbeta(target,0:ntot+2*target,ntot-0:ntot+2*(1-target)),1-pbeta(target,0:ntot+1,ntot-0:ntot+1)))
-
-#Simulation Specifications (scenarios from Ivanova and Kim 2009)
+#Simulation Specifications (scenarios from BOIN Paper)
 target = 0.20    #Target DLT Probability
 cohort.size = 1  #Cohort Size
-ncohorts.vec = c(25,48)    #Maximum number of cohorts
+ncohorts.vec = c(24,48) #Maximum number of cohorts
 min.esc.size = 3 #Minimum number of people treated at current dose before escalation is allowed
 ntrials = 10000  #Number of simulated trials for each true scenario
 #True DLT Probabilities in each scenario
-dlt.probs = rbind(c(0.05,0.10,0.20,0.30,0.50,0.70), 
+dlt.probs = rbind(c(0.05,0.10,0.20,0.35,0.50,0.70),
+                  c(0.05,0.10,0.15,0.20,0.25,0.35), 
+                  c(0.10,0.10,0.10,0.10,0.25,0.80),
+                  c(0.01,0.01,0.05,0.10,0.25,0.80),
                   c(0.30,0.40,0.52,0.61,0.76,0.87),
-                  c(0.05,0.06,0.08,0.11,0.19,0.34),
-                  c(0.06,0.08,0.12,0.18,0.40,0.71),
-                  c(0.00,0.00,0.03,0.05,0.11,0.22))
+                  c(0.05,0.05,0.05,0.05,0.10,0.15))
 ndose = ncol(dlt.probs)
 
 #Comparator Design parameters
-crm.skeleton = get.skeleton(ndose,target,delta=0.07) #CRM skeleton
+crm.skeleton = get.skeleton(ndose,target,delta=0.25*target) #CRM skeleton
+bmacrm.skeletons = rbind(crm.skeleton,get.skeleton(ndose,target,prior.best=2,delta=0.4*target),get.skeleton(ndose,target,prior.best=ndose,delta=0.15*target))
 boin.int = as.numeric(BOIN::get.boundary(target=target,ncohort=3,cohortsize=1)[1:2]) #BOIN dose escalation interval
 
-
 #Function to Calculate Summary Metrics
-get.stats <- function(ldat,cohort.size,ncohorts,target,crm=FALSE,skeleton=NULL){
+get.stats <- function(ldat,cohort.size,ncohorts,target,crm=FALSE,bmacrm=FALSE,skeleton=NULL){
   
   # Number of doses
   ndose = ncol(ldat[[1]])
@@ -37,8 +34,9 @@ get.stats <- function(ldat,cohort.size,ncohorts,target,crm=FALSE,skeleton=NULL){
   ptrt = rowMeans(sapply(ldat,function(x) c(cohort.size*ncohorts-sum(x[1,]),x[1,])))/(cohort.size*ncohorts)
 
   # Selection Percentages
-  if(!crm) psel = prop.table(table(factor(sapply(ldat,function(dat) get.best.dose(dat,target=target)),levels=0:ndose)))
+  if(!crm & !bmacrm) psel = prop.table(table(factor(sapply(ldat,function(dat) get.best.dose(dat,target=target)),levels=0:ndose)))
   if(crm)  psel = prop.table(table(factor(sapply(ldat,function(dat) get.crm.best.dose(dat,skeleton=skeleton,target=target)),levels=0:ndose)))
+  if(bmacrm)  psel = prop.table(table(factor(sapply(ldat,function(dat) get.bmacrm.best.dose(dat,skeletons=skeleton,target=target)),levels=0:ndose)))
   
   # Collect statistics
   stats = rbind(ptrt=ptrt,psel=psel)
@@ -64,37 +62,19 @@ get.ai = function(dlt.probs,target,ntrials,sel.pct){
 #Loop over every true scenario and simulate trials under each design parallely
 library(foreach); library(doParallel); library(doRNG)
 RNGkind("L'Ecuyer"); set.seed(1985)
-registerDoParallel(cores=8)
+registerDoParallel(cores=12)
 for(ncohorts in ncohorts.vec){
   for(scen in 1:nrow(dlt.probs)){
     
-    #RIDE (with default working value OR=2)
-    ride1.dat = foreach(m=1:ntrials) %dorng% { simulate.trial(dlt.probs[scen,],cohort.size=cohort.size,ncohorts=ncohorts,target=target,or=1.60,min.esc.size=min.esc.size) }
-    ride1.stats = get.stats(ncohorts,cohort.size,ldat=ride1.dat,target=target)
-    ride1.ai = round(get.ai(dlt.probs[scen,],target=target,ntrials=ntrials,sel.pct=ride1.stats[2,]),3)
-    write.table(rbind(pdlt=c(NA,dlt.probs[scen,]),ride1.stats,ai=c(ride1.ai,rep(NA,length(dlt.probs[scen,])))),sep=",",
-                file=paste("Results/Classic/RIDE1-Stats-N",ncohorts,".txt",sep=""),
-                col.names=!file.exists(paste("Results/Classic/RIDE1-Stats-N",ncohorts,".txt",sep="")),
-                row.names=FALSE,append=file.exists(paste("Results/Classic/RIDE1-Stats-N",ncohorts,".txt",sep="")))
-    
-    #RIDE (with smaller than default working value OR=1.4)
-    ride2.dat = foreach(m=1:ntrials) %dorng% { simulate.trial(dlt.probs[scen,],cohort.size=cohort.size,ncohorts=ncohorts,target=target,or=1.05,min.esc.size=min.esc.size) }
-    ride2.stats = get.stats(ncohorts,cohort.size,ldat=ride2.dat,target=target)
-    ride2.ai = round(get.ai(dlt.probs[scen,],target=target,ntrials=ntrials,sel.pct=ride2.stats[2,]),3)
-    write.table(rbind(pdlt=c(NA,dlt.probs[scen,]),ride2.stats,ai=c(ride2.ai,rep(NA,length(dlt.probs[scen,])))),sep=",",
-                file=paste("Results/Classic/RIDE2-Stats-N",ncohorts,".txt",sep=""),
-                col.names=!file.exists(paste("Results/Classic/RIDE2-Stats-N",ncohorts,".txt",sep="")),
-                row.names=FALSE,append=file.exists(paste("Results/Classic/RIDE2-Stats-N",ncohorts,".txt",sep="")))
-    
-    #RIDE (with larger than default working value OR=4)
-    ride3.dat = foreach(m=1:ntrials) %dorng% { simulate.trial(dlt.probs[scen,],cohort.size=cohort.size,ncohorts=ncohorts,target=target,or=4.00,min.esc.size=min.esc.size) }
-    ride3.stats = get.stats(ncohorts,cohort.size,ldat=ride3.dat,target=target)
-    ride3.ai = round(get.ai(dlt.probs[scen,],target=target,ntrials=ntrials,sel.pct=ride3.stats[2,]),3)
-    write.table(rbind(pdlt=c(NA,dlt.probs[scen,]),ride3.stats,ai=c(ride3.ai,rep(NA,length(dlt.probs[scen,])))),sep=",",
-                file=paste("Results/Classic/RIDE3-Stats-N",ncohorts,".txt",sep=""),
-                col.names=!file.exists(paste("Results/Classic/RIDE3-Stats-N",ncohorts,".txt",sep="")),
-                row.names=FALSE,append=file.exists(paste("Results/Classic/RIDE3-Stats-N",ncohorts,".txt",sep="")))
-    
+    #loRIDE
+    ride.dat = foreach(m=1:ntrials) %dorng% { simulate.trial(dlt.probs[scen,],cohort.size=cohort.size,ncohorts=ncohorts,target=target,min.esc.size=min.esc.size) }
+    ride.stats = get.stats(ncohorts,cohort.size,ldat=ride.dat,target=target)
+    ride.ai = round(get.ai(dlt.probs[scen,],target=target,ntrials=ntrials,sel.pct=ride.stats[2,]),3)
+    write.table(rbind(pdlt=c(NA,dlt.probs[scen,]),ride.stats,ai=c(ride.ai,rep(NA,length(dlt.probs[scen,])))),sep=",",
+                file=paste("Results/Classic/RIDE-Stats-N",ncohorts,".txt",sep=""),
+                col.names=!file.exists(paste("Results/Classic/RIDE-Stats-N",ncohorts,".txt",sep="")),
+                row.names=FALSE,append=file.exists(paste("Results/Classic/RIDE-Stats-N",ncohorts,".txt",sep="")))
+
     #mTPI
     mtpi.dat = foreach(m=1:ntrials) %dorng% { simulate.mtpi.trial(dlt.probs[scen,],cohort.size=cohort.size,ncohorts=ncohorts,target=target,delta=0.07,min.esc.size=min.esc.size) }
     mtpi.stats = get.stats(ncohorts,cohort.size,ldat=mtpi.dat,target=target)
@@ -104,7 +84,16 @@ for(ncohorts in ncohorts.vec){
                 col.names=!file.exists(paste("Results/Classic/mTPI-Stats-N",ncohorts,".txt",sep="")),
                 row.names=FALSE,append=file.exists(paste("Results/Classic/mTPI-Stats-N",ncohorts,".txt",sep="")))
     
-    #CRM (with default skeleton)
+    #Keyboard
+    key.dat = foreach(m=1:ntrials) %dorng% { simulate.keyboard.trial(dlt.probs[scen,],cohort.size=cohort.size,ncohorts=ncohorts,target=target,delta=0.07,min.esc.size=min.esc.size) }
+    key.stats = get.stats(ncohorts,cohort.size,ldat=key.dat,target=target)
+    key.ai = round(get.ai(dlt.probs[scen,],target=target,ntrials=ntrials,sel.pct=key.stats[2,]),3)
+    write.table(rbind(pdlt=c(NA,dlt.probs[scen,]),key.stats,ai=c(key.ai,rep(NA,length(dlt.probs[scen,])))),sep=",",
+                file=paste("Results/Classic/Key-Stats-N",ncohorts,".txt",sep=""),
+                col.names=!file.exists(paste("Results/Classic/Key-Stats-N",ncohorts,".txt",sep="")),
+                row.names=FALSE,append=file.exists(paste("Results/Classic/Key-Stats-N",ncohorts,".txt",sep="")))
+    
+    #CRM
     crm.dat = foreach(m=1:ntrials) %dorng% { simulate.crm.trial(dlt.probs[scen,],skeleton=crm.skeleton,cohort.size=cohort.size,ncohorts=ncohorts,target=target,min.esc.size=min.esc.size) }
     crm.stats = get.stats(ncohorts,cohort.size,ldat=crm.dat,target=target,crm=TRUE,skeleton=crm.skeleton)
     crm.ai = round(get.ai(dlt.probs[scen,],target=target,ntrials=ntrials,sel.pct=crm.stats[2,]),3)
@@ -112,7 +101,16 @@ for(ncohorts in ncohorts.vec){
                 file=paste("Results/Classic/CRM-Stats-N",ncohorts,".txt",sep=""),
                 col.names=!file.exists(paste("Results/Classic/CRM-Stats-N",ncohorts,".txt",sep="")),
                 row.names=FALSE,append=file.exists(paste("Results/Classic/CRM-Stats-N",ncohorts,".txt",sep="")))
-    
+
+    #BMA-CRM
+    bmacrm.dat = foreach(m=1:ntrials) %dorng% { simulate.bmacrm.trial(dlt.probs[scen,],skeletons=bmacrm.skeletons,cohort.size=cohort.size,ncohorts=ncohorts,target=target,min.esc.size=min.esc.size) }
+    bmacrm.stats = get.stats(ncohorts,cohort.size,ldat=bmacrm.dat,target=target,bmacrm=TRUE,skeleton=bmacrm.skeletons)
+    bmacrm.ai = round(get.ai(dlt.probs[scen,],target=target,ntrials=ntrials,sel.pct=bmacrm.stats[2,]),3)
+    write.table(rbind(pdlt=c(NA,dlt.probs[scen,]),bmacrm.stats,ai=c(bmacrm.ai,rep(NA,length(dlt.probs[scen,])))),sep=",",
+                file=paste("Results/Classic/BMACRM-Stats-N",ncohorts,".txt",sep=""),
+                col.names=!file.exists(paste("Results/Classic/BMACRM-Stats-N",ncohorts,".txt",sep="")),
+                row.names=FALSE,append=file.exists(paste("Results/Classic/BMACRM-Stats-N",ncohorts,".txt",sep="")))
+
     #BOIN
     boin.dat = foreach(m=1:ntrials) %dorng% { simulate.boin.trial(dlt.probs[scen,],boin.int=boin.int,cohort.size=cohort.size,ncohorts=ncohorts,target=target,min.esc.size=min.esc.size) }
     boin.stats = get.stats(ncohorts,cohort.size,ldat=boin.dat,target=target)
@@ -132,35 +130,37 @@ stopImplicitCluster()
 
 ### Summarize Results
 #Load results
-ncohorts = 25 #ncohorts = 48
-ride1.res = read.table(file=paste("Results/Classic/RIDE1-Stats-N",ncohorts,".txt",sep=""),sep=",",header=TRUE)
-ride2.res = read.table(file=paste("Results/Classic/RIDE2-Stats-N",ncohorts,".txt",sep=""),sep=",",header=TRUE)
-ride3.res = read.table(file=paste("Results/Classic/RIDE3-Stats-N",ncohorts,".txt",sep=""),sep=",",header=TRUE)
+ncohorts = 24 #ncohorts = 48
+ride.res = read.table(file=paste("Results/Classic/RIDE-Stats-N",ncohorts,".txt",sep=""),sep=",",header=TRUE)
 mtpi.res = read.table(file=paste("Results/Classic/mTPI-Stats-N",ncohorts,".txt",sep=""),sep=",",header=TRUE)
+key.res = read.table(file=paste("Results/Classic/Key-Stats-N",ncohorts,".txt",sep=""),sep=",",header=TRUE)
 crm.res = read.table(file=paste("Results/Classic/CRM-Stats-N",ncohorts,".txt",sep=""),sep=",",header=TRUE)
+bmacrm.res = read.table(file=paste("Results/Classic/BMACRM-Stats-N",ncohorts,".txt",sep=""),sep=",",header=TRUE)
 boin.res = read.table(file=paste("Results/Classic/BOIN-Stats-N",ncohorts,".txt",sep=""),sep=",",header=TRUE)
   
 ### Create Tables for Manuscript
 #Percent Treated At Each Dose
-r= 2; res1.ptrt = rbind(sprintf(fmt="%.2f",c(0,dlt.probs[1,])),sprintf(fmt="%.1f",100*ride1.res[r,]),sprintf(fmt="%.1f",100*ride2.res[r,]),sprintf(fmt="%.1f",100*ride3.res[r,]),sprintf(fmt="%.1f",100*mtpi.res[r,]),sprintf(fmt="%.1f",100*crm.res[r,]),sprintf(fmt="%.1f",100*boin.res[r,]))
-r= 6; res2.ptrt = rbind(sprintf(fmt="%.2f",c(0,dlt.probs[2,])),sprintf(fmt="%.1f",100*ride1.res[r,]),sprintf(fmt="%.1f",100*ride2.res[r,]),sprintf(fmt="%.1f",100*ride3.res[r,]),sprintf(fmt="%.1f",100*mtpi.res[r,]),sprintf(fmt="%.1f",100*crm.res[r,]),sprintf(fmt="%.1f",100*boin.res[r,]))
-r=10; res3.ptrt = rbind(sprintf(fmt="%.2f",c(0,dlt.probs[3,])),sprintf(fmt="%.1f",100*ride1.res[r,]),sprintf(fmt="%.1f",100*ride2.res[r,]),sprintf(fmt="%.1f",100*ride3.res[r,]),sprintf(fmt="%.1f",100*mtpi.res[r,]),sprintf(fmt="%.1f",100*crm.res[r,]),sprintf(fmt="%.1f",100*boin.res[r,]))
-r=14; res4.ptrt = rbind(sprintf(fmt="%.2f",c(0,dlt.probs[4,])),sprintf(fmt="%.1f",100*ride1.res[r,]),sprintf(fmt="%.1f",100*ride2.res[r,]),sprintf(fmt="%.1f",100*ride3.res[r,]),sprintf(fmt="%.1f",100*mtpi.res[r,]),sprintf(fmt="%.1f",100*crm.res[r,]),sprintf(fmt="%.1f",100*boin.res[r,]))
-r=18; res5.ptrt = rbind(sprintf(fmt="%.2f",c(0,dlt.probs[5,])),sprintf(fmt="%.1f",100*ride1.res[r,]),sprintf(fmt="%.1f",100*ride2.res[r,]),sprintf(fmt="%.1f",100*ride3.res[r,]),sprintf(fmt="%.1f",100*mtpi.res[r,]),sprintf(fmt="%.1f",100*crm.res[r,]),sprintf(fmt="%.1f",100*boin.res[r,]))
-colnames(res1.ptrt) = colnames(res2.ptrt) = colnames(res3.ptrt) = colnames(res4.ptrt) = colnames(res5.ptrt) = c("None",1:ncol(dlt.probs))
-rownames(res1.ptrt) = rownames(res2.ptrt) = rownames(res3.ptrt) = rownames(res4.ptrt) = rownames(res5.ptrt) = c("DLT Prob","RIDE","RI(-)","RI(+)","mTPI","CRM","BOIN")
-tab.ptrt = rbind(res1.ptrt,res2.ptrt,res3.ptrt,res4.ptrt,res5.ptrt)
+r= 2; res1.ptrt = rbind(sprintf(fmt="%.2f",c(0,dlt.probs[1,])),sprintf(fmt="%.1f",100*ride.res[r,]),sprintf(fmt="%.1f",100*mtpi.res[r,]),sprintf(fmt="%.1f",100*key.res[r,]),sprintf(fmt="%.1f",100*crm.res[r,]),sprintf(fmt="%.1f",100*bmacrm.res[r,]),sprintf(fmt="%.1f",100*boin.res[r,]))
+r= 6; res2.ptrt = rbind(sprintf(fmt="%.2f",c(0,dlt.probs[2,])),sprintf(fmt="%.1f",100*ride.res[r,]),sprintf(fmt="%.1f",100*mtpi.res[r,]),sprintf(fmt="%.1f",100*key.res[r,]),sprintf(fmt="%.1f",100*crm.res[r,]),sprintf(fmt="%.1f",100*bmacrm.res[r,]),sprintf(fmt="%.1f",100*boin.res[r,]))
+r=10; res3.ptrt = rbind(sprintf(fmt="%.2f",c(0,dlt.probs[3,])),sprintf(fmt="%.1f",100*ride.res[r,]),sprintf(fmt="%.1f",100*mtpi.res[r,]),sprintf(fmt="%.1f",100*key.res[r,]),sprintf(fmt="%.1f",100*crm.res[r,]),sprintf(fmt="%.1f",100*bmacrm.res[r,]),sprintf(fmt="%.1f",100*boin.res[r,]))
+r=14; res4.ptrt = rbind(sprintf(fmt="%.2f",c(0,dlt.probs[4,])),sprintf(fmt="%.1f",100*ride.res[r,]),sprintf(fmt="%.1f",100*mtpi.res[r,]),sprintf(fmt="%.1f",100*key.res[r,]),sprintf(fmt="%.1f",100*crm.res[r,]),sprintf(fmt="%.1f",100*bmacrm.res[r,]),sprintf(fmt="%.1f",100*boin.res[r,]))
+r=18; res5.ptrt = rbind(sprintf(fmt="%.2f",c(0,dlt.probs[5,])),sprintf(fmt="%.1f",100*ride.res[r,]),sprintf(fmt="%.1f",100*mtpi.res[r,]),sprintf(fmt="%.1f",100*key.res[r,]),sprintf(fmt="%.1f",100*crm.res[r,]),sprintf(fmt="%.1f",100*bmacrm.res[r,]),sprintf(fmt="%.1f",100*boin.res[r,]))
+r=22; res6.ptrt = rbind(sprintf(fmt="%.2f",c(0,dlt.probs[6,])),sprintf(fmt="%.1f",100*ride.res[r,]),sprintf(fmt="%.1f",100*mtpi.res[r,]),sprintf(fmt="%.1f",100*key.res[r,]),sprintf(fmt="%.1f",100*crm.res[r,]),sprintf(fmt="%.1f",100*bmacrm.res[r,]),sprintf(fmt="%.1f",100*boin.res[r,]))
+colnames(res1.ptrt) = colnames(res2.ptrt) = colnames(res3.ptrt) = colnames(res4.ptrt) = colnames(res5.ptrt) = colnames(res6.ptrt) = c("None",1:ncol(dlt.probs))
+rownames(res1.ptrt) = rownames(res2.ptrt) = rownames(res3.ptrt) = rownames(res4.ptrt) = rownames(res5.ptrt) = rownames(res6.ptrt) = c("DLT Prob","loRIDE","mTPI","Keyboard","CRM","BMA-CRM","BOIN")
+tab.ptrt = rbind(res1.ptrt,res2.ptrt,res3.ptrt,res4.ptrt,res5.ptrt,res6.ptrt)
 tab.ptrt
 
 #Percent Selected as MTD + Accuracy Index
-r= 3; res1.psel = rbind(sprintf(fmt="%.2f",c(0,dlt.probs[1,],NA)),sprintf(fmt="%.1f",100*unlist(c(ride1.res[r,],ride1.res[r+1,1]))),sprintf(fmt="%.1f",100*unlist(c(ride2.res[r,],ride2.res[r+1,1]))),sprintf(fmt="%.1f",100*unlist(c(ride3.res[r,],ride3.res[r+1,1]))),sprintf(fmt="%.1f",100*unlist(c(mtpi.res[r,],mtpi.res[r+1,1]))),sprintf(fmt="%.1f",100*unlist(c(crm.res[r,],crm.res[r+1,1]))),sprintf(fmt="%.1f",100*unlist(c(boin.res[r,],boin.res[r+1,1]))))
-r= 7; res2.psel = rbind(sprintf(fmt="%.2f",c(0,dlt.probs[2,],NA)),sprintf(fmt="%.1f",100*unlist(c(ride1.res[r,],ride1.res[r+1,1]))),sprintf(fmt="%.1f",100*unlist(c(ride2.res[r,],ride2.res[r+1,1]))),sprintf(fmt="%.1f",100*unlist(c(ride3.res[r,],ride3.res[r+1,1]))),sprintf(fmt="%.1f",100*unlist(c(mtpi.res[r,],mtpi.res[r+1,1]))),sprintf(fmt="%.1f",100*unlist(c(crm.res[r,],crm.res[r+1,1]))),sprintf(fmt="%.1f",100*unlist(c(boin.res[r,],boin.res[r+1,1]))))
-r=11; res3.psel = rbind(sprintf(fmt="%.2f",c(0,dlt.probs[3,],NA)),sprintf(fmt="%.1f",100*unlist(c(ride1.res[r,],ride1.res[r+1,1]))),sprintf(fmt="%.1f",100*unlist(c(ride2.res[r,],ride2.res[r+1,1]))),sprintf(fmt="%.1f",100*unlist(c(ride3.res[r,],ride3.res[r+1,1]))),sprintf(fmt="%.1f",100*unlist(c(mtpi.res[r,],mtpi.res[r+1,1]))),sprintf(fmt="%.1f",100*unlist(c(crm.res[r,],crm.res[r+1,1]))),sprintf(fmt="%.1f",100*unlist(c(boin.res[r,],boin.res[r+1,1]))))
-r=15; res4.psel = rbind(sprintf(fmt="%.2f",c(0,dlt.probs[4,],NA)),sprintf(fmt="%.1f",100*unlist(c(ride1.res[r,],ride1.res[r+1,1]))),sprintf(fmt="%.1f",100*unlist(c(ride2.res[r,],ride2.res[r+1,1]))),sprintf(fmt="%.1f",100*unlist(c(ride3.res[r,],ride3.res[r+1,1]))),sprintf(fmt="%.1f",100*unlist(c(mtpi.res[r,],mtpi.res[r+1,1]))),sprintf(fmt="%.1f",100*unlist(c(crm.res[r,],crm.res[r+1,1]))),sprintf(fmt="%.1f",100*unlist(c(boin.res[r,],boin.res[r+1,1]))))
-r=19; res5.psel = rbind(sprintf(fmt="%.2f",c(0,dlt.probs[5,],NA)),sprintf(fmt="%.1f",100*unlist(c(ride1.res[r,],ride1.res[r+1,1]))),sprintf(fmt="%.1f",100*unlist(c(ride2.res[r,],ride2.res[r+1,1]))),sprintf(fmt="%.1f",100*unlist(c(ride3.res[r,],ride3.res[r+1,1]))),sprintf(fmt="%.1f",100*unlist(c(mtpi.res[r,],mtpi.res[r+1,1]))),sprintf(fmt="%.1f",100*unlist(c(crm.res[r,],crm.res[r+1,1]))),sprintf(fmt="%.1f",100*unlist(c(boin.res[r,],boin.res[r+1,1]))))
-colnames(res1.psel) = colnames(res2.psel) = colnames(res3.psel) = colnames(res4.psel) = colnames(res5.psel) = c("None",1:ncol(dlt.probs),"Acc Idx")
-rownames(res1.psel) = rownames(res2.psel) = rownames(res3.psel) = rownames(res4.psel) = rownames(res5.psel) = c("DLT Prob","RIDE","RI(-)","RI(+)","mTPI","CRM","BOIN")
-tab.psel = rbind(res1.psel,res2.psel,res3.psel,res4.psel,res5.psel)
+r= 3; res1.psel = rbind(sprintf(fmt="%.2f",c(0,dlt.probs[1,],NA)),sprintf(fmt="%.1f",100*unlist(c(ride.res[r,],ride.res[r+1,1]))),sprintf(fmt="%.1f",100*unlist(c(mtpi.res[r,],mtpi.res[r+1,1]))),sprintf(fmt="%.1f",100*unlist(c(key.res[r,],key.res[r+1,1]))),sprintf(fmt="%.1f",100*unlist(c(crm.res[r,],crm.res[r+1,1]))),sprintf(fmt="%.1f",100*unlist(c(bmacrm.res[r,],bmacrm.res[r+1,1]))),sprintf(fmt="%.1f",100*unlist(c(boin.res[r,],boin.res[r+1,1]))))
+r= 7; res2.psel = rbind(sprintf(fmt="%.2f",c(0,dlt.probs[2,],NA)),sprintf(fmt="%.1f",100*unlist(c(ride.res[r,],ride.res[r+1,1]))),sprintf(fmt="%.1f",100*unlist(c(mtpi.res[r,],mtpi.res[r+1,1]))),sprintf(fmt="%.1f",100*unlist(c(key.res[r,],key.res[r+1,1]))),sprintf(fmt="%.1f",100*unlist(c(crm.res[r,],crm.res[r+1,1]))),sprintf(fmt="%.1f",100*unlist(c(bmacrm.res[r,],bmacrm.res[r+1,1]))),sprintf(fmt="%.1f",100*unlist(c(boin.res[r,],boin.res[r+1,1]))))
+r=11; res3.psel = rbind(sprintf(fmt="%.2f",c(0,dlt.probs[3,],NA)),sprintf(fmt="%.1f",100*unlist(c(ride.res[r,],ride.res[r+1,1]))),sprintf(fmt="%.1f",100*unlist(c(mtpi.res[r,],mtpi.res[r+1,1]))),sprintf(fmt="%.1f",100*unlist(c(key.res[r,],key.res[r+1,1]))),sprintf(fmt="%.1f",100*unlist(c(crm.res[r,],crm.res[r+1,1]))),sprintf(fmt="%.1f",100*unlist(c(bmacrm.res[r,],bmacrm.res[r+1,1]))),sprintf(fmt="%.1f",100*unlist(c(boin.res[r,],boin.res[r+1,1]))))
+r=15; res4.psel = rbind(sprintf(fmt="%.2f",c(0,dlt.probs[4,],NA)),sprintf(fmt="%.1f",100*unlist(c(ride.res[r,],ride.res[r+1,1]))),sprintf(fmt="%.1f",100*unlist(c(mtpi.res[r,],mtpi.res[r+1,1]))),sprintf(fmt="%.1f",100*unlist(c(key.res[r,],key.res[r+1,1]))),sprintf(fmt="%.1f",100*unlist(c(crm.res[r,],crm.res[r+1,1]))),sprintf(fmt="%.1f",100*unlist(c(bmacrm.res[r,],bmacrm.res[r+1,1]))),sprintf(fmt="%.1f",100*unlist(c(boin.res[r,],boin.res[r+1,1]))))
+r=19; res5.psel = rbind(sprintf(fmt="%.2f",c(0,dlt.probs[5,],NA)),sprintf(fmt="%.1f",100*unlist(c(ride.res[r,],ride.res[r+1,1]))),sprintf(fmt="%.1f",100*unlist(c(mtpi.res[r,],mtpi.res[r+1,1]))),sprintf(fmt="%.1f",100*unlist(c(key.res[r,],key.res[r+1,1]))),sprintf(fmt="%.1f",100*unlist(c(crm.res[r,],crm.res[r+1,1]))),sprintf(fmt="%.1f",100*unlist(c(bmacrm.res[r,],bmacrm.res[r+1,1]))),sprintf(fmt="%.1f",100*unlist(c(boin.res[r,],boin.res[r+1,1]))))
+r=23; res6.psel = rbind(sprintf(fmt="%.2f",c(0,dlt.probs[6,],NA)),sprintf(fmt="%.1f",100*unlist(c(ride.res[r,],ride.res[r+1,1]))),sprintf(fmt="%.1f",100*unlist(c(mtpi.res[r,],mtpi.res[r+1,1]))),sprintf(fmt="%.1f",100*unlist(c(key.res[r,],key.res[r+1,1]))),sprintf(fmt="%.1f",100*unlist(c(crm.res[r,],crm.res[r+1,1]))),sprintf(fmt="%.1f",100*unlist(c(bmacrm.res[r,],bmacrm.res[r+1,1]))),sprintf(fmt="%.1f",100*unlist(c(boin.res[r,],boin.res[r+1,1]))))
+colnames(res1.psel) = colnames(res2.psel) = colnames(res3.psel) = colnames(res4.psel) = colnames(res5.psel) = colnames(res6.psel) = c("None",1:ncol(dlt.probs),"Acc Idx")
+rownames(res1.psel) = rownames(res2.psel) = rownames(res3.psel) = rownames(res4.psel) = rownames(res5.psel) = rownames(res6.psel) = c("DLT Prob","loRIDE","mTPI","Keyboard","CRM","BMA-CRM","BOIN")
+tab.psel = rbind(res1.psel,res2.psel,res3.psel,res4.psel,res5.psel,res6.psel)
 tab.psel
 
 write.table(cbind(tab.ptrt,tab.psel),sep=" & ",quote=FALSE)
